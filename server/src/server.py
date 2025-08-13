@@ -1,7 +1,7 @@
 import asyncio
 import json
 import websockets
-import retrival 
+import generic_retrival as retrival 
 import rerenking
 import generation
 import traceback
