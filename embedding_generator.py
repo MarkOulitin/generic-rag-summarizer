@@ -129,6 +129,7 @@ class EmbeddingGenerator:
     def prepare_chunks_for_embedding(self, chunks: List[Dict]) -> tuple[List[str], List[Dict]]:
         """Prepare chunk texts and metadata for embedding generation"""
         texts = []
+        chunk_contents = []
         metadata = []
         
         for chunk in chunks:
@@ -143,13 +144,14 @@ class EmbeddingGenerator:
                 else:
                     embedding_text = chunk_text
                 
+                chunk_contents.append(chunk_text)
                 texts.append(embedding_text)
                 metadata.append(chunk_metadata)
             else:
                 logger.warning(f"Skipping invalid chunk: {chunk}")
         
         logger.info(f"Prepared {len(texts)} chunks for embedding generation")
-        return texts, metadata
+        return texts, metadata, chunk_contents
     
     def generate_embeddings_for_chunks(self) -> bool:
         """Generate embeddings for all processed chunks"""
@@ -176,8 +178,7 @@ class EmbeddingGenerator:
         
         logger.info(f"Loaded {len(chunks)} chunks")
         
-        # Prepare texts and metadata
-        texts, metadata = self.prepare_chunks_for_embedding(chunks)
+        texts, metadata, chunk_contents = self.prepare_chunks_for_embedding(chunks)
         
         if not texts:
             logger.error("No valid texts found for embedding generation")
@@ -198,6 +199,7 @@ class EmbeddingGenerator:
             # Save embeddings and metadata
             embeddings_file = self.output_dir / 'embeddings.npy'
             metadata_file = self.output_dir / 'metadata.pickle'
+            content_file = self.output_dir / 'content.pickle'
             
             logger.info(f"Saving embeddings to {embeddings_file}")
             np.save(embeddings_file, embeddings)
@@ -205,6 +207,9 @@ class EmbeddingGenerator:
             logger.info(f"Saving metadata to {metadata_file}")
             with open(metadata_file, 'wb') as f:
                 pickle.dump(metadata, f)
+            logger.info(f"Saving chunks content to {content_file}")
+            with open(content_file, 'wb') as f:
+                pickle.dump(chunk_contents, f)
             
             # Save generation summary
             summary = {

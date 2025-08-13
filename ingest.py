@@ -70,12 +70,15 @@ class GenericIngest:
         """Load embeddings and metadata from files"""
         embeddings_file = self.embeddings_dir / 'embeddings.npy'
         metadata_file = self.embeddings_dir / 'metadata.pickle'
+        content_file = self.embeddings_dir / 'content.pickle'
         
         if not embeddings_file.exists():
             raise FileNotFoundError(f"Embeddings file not found: {embeddings_file}")
         
         if not metadata_file.exists():
             raise FileNotFoundError(f"Metadata file not found: {metadata_file}")
+        if not content_file.exists():
+            raise FileNotFoundError(f"Content file not found: {content_file}")
         
         logger.info(f"Loading embeddings from {embeddings_file}")
         embeddings = np.load(embeddings_file)
@@ -83,13 +86,17 @@ class GenericIngest:
         logger.info(f"Loading metadata from {metadata_file}")
         with open(metadata_file, 'rb') as f:
             metadata = pickle.load(f)
+
+        logger.info(f"Loading content from {content_file}")
+        with open(content_file, 'rb') as f:
+            content = pickle.load(f)
         
-        logger.info(f"Loaded {len(embeddings)} embeddings and {len(metadata)} metadata entries")
+        logger.info(f"Loaded {len(embeddings)} embeddings and {len(metadata)} metadata entries and {len(content)} chunks")
         
-        if len(embeddings) != len(metadata):
-            raise ValueError(f"Mismatch: {len(embeddings)} embeddings vs {len(metadata)} metadata entries")
+        if len(embeddings) != len(metadata) or len(content) != len(metadata):
+            raise ValueError(f"Mismatch: {len(embeddings)} embeddings vs {len(metadata)} metadata entries vs {len(content)} chunks")
         
-        return embeddings, metadata
+        return embeddings, metadata, content
     
     def prepare_metadata_for_chromadb(self, metadata_list: List[Dict]) -> List[Dict]:
         """Prepare metadata for ChromaDB ingestion"""
@@ -119,10 +126,8 @@ class GenericIngest:
         
         return prepared_metadata
     
-    def save_embeddings_to_chromadb(self, embeddings: np.ndarray, metadata_array: List[Dict]) -> bool:
-        """Save embeddings and metadata to ChromaDB"""
+    def save_embeddings_to_chromadb(self, embeddings: np.ndarray, metadata_array: List[Dict], content) -> bool:
         try:
-            # Generate unique IDs
             ids = [str(uuid.uuid4()) for _ in range(len(embeddings))]
             embeddings_list = embeddings.tolist()
             
@@ -140,11 +145,13 @@ class GenericIngest:
                 batch_ids = ids[i:batch_end]
                 batch_embeddings = embeddings_list[i:batch_end]
                 batch_metadata = prepared_metadata[i:batch_end]
+                batch_chunks = content[i:batch_end]
                 
                 logger.info(f"Adding batch {i//batch_size + 1}/{total_batches} ({len(batch_ids)} items)")
                 
                 self.collection.add(
                     embeddings=batch_embeddings,
+                    documents=batch_chunks,
                     metadatas=batch_metadata,
                     ids=batch_ids
                 )
@@ -218,11 +225,10 @@ class GenericIngest:
             logger.info("Starting document ingestion process")
             logger.info(f"Domain: {self.topic_domain}")
             
-            # Load embeddings and metadata
-            embeddings, metadata = self.load_embeddings_and_metadata()
+            embeddings, metadata, content = self.load_embeddings_and_metadata()
             
             # Save to ChromaDB
-            success = self.save_embeddings_to_chromadb(embeddings, metadata)
+            success = self.save_embeddings_to_chromadb(embeddings, metadata, content)
             
             if success:
                 # Get and log collection statistics
