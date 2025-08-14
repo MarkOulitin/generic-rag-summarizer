@@ -4,6 +4,7 @@ import retrival
 import time
 import rerenking
 import generation
+import recommendations
 import traceback
 from typing import List, Dict, Any, TypedDict, Optional, Callable, Awaitable
 from dataclasses import dataclass
@@ -57,6 +58,9 @@ class WorkflowState(TypedDict):
     generated_summary: str
     formatted_sources: List[Dict[str, Any]]
     
+    # Recommendations
+    recommendations: List[str]
+    
     # Progress tracking
     current_stage: str
     stage_times: Dict[str, float]
@@ -98,12 +102,14 @@ class RAGWorkflow:
         workflow.add_node("retrieve", self._retrieve_chunks)
         workflow.add_node("rerank", self._rerank_chunks)
         workflow.add_node("generate", self._generate_summary)
+        workflow.add_node("recommend", self._generate_recommendations)
         
         # Define workflow edges
         workflow.set_entry_point("retrieve")
         workflow.add_edge("retrieve", "rerank")
         workflow.add_edge("rerank", "generate")
-        workflow.add_edge("generate", END)
+        workflow.add_edge("generate", "recommend")
+        workflow.add_edge("recommend", END)
         
         # Add memory checkpointing
         memory = MemorySaver()
@@ -194,6 +200,45 @@ class RAGWorkflow:
             logger.error(f"Error in generate_summary: {e}")
             state['error'] = f"Generation failed: {str(e)}"
             return state
+    
+    async def _generate_recommendations(self, state: WorkflowState) -> WorkflowState:
+        """Generate follow-up question recommendations"""
+        start_time = time.time()
+        
+        try:
+            conversation_history = state['conversation_history']
+            
+            logger.info(f"Generating recommendations based on {len(conversation_history)} messages...")
+            
+            # Include the current query and response in history for recommendations
+            current_history = list(conversation_history)
+            current_history.append({
+                    "role": "user",
+                    "content": state["query"]
+            })
+            if state.get('generated_summary'):
+                current_history.append({
+                    "role": "assistant",
+                    "content": state['generated_summary']
+                })
+            
+            generated_recommendations = await recommendations.generate_recommendations(current_history)
+            elapsed_time = time.time() - start_time
+            
+            logger.info(f"Generated {len(generated_recommendations)} recommendations in {elapsed_time:.2f}s")
+            
+            # Update state
+            state['recommendations'] = generated_recommendations
+            state['current_stage'] = 'recommendations_generated'
+            state['stage_times']['recommendations'] = elapsed_time
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error in generate_recommendations: {e}")
+            # Don't fail the whole workflow for recommendations, just return empty list
+            state['recommendations'] = []
+            return state
         
     async def run_workflow(self, query: str, conversation_id: str = "default", generate_callback=None) -> Dict[str, Any]:
         try:
@@ -215,6 +260,7 @@ class RAGWorkflow:
                 reranked_chunks=[],
                 generated_summary="",
                 formatted_sources=[],
+                recommendations=[],
                 current_stage="starting",
                 stage_times={},
                 error=None
@@ -232,6 +278,7 @@ class RAGWorkflow:
             return {
                 "summary": final_state.get("generated_summary", ""),
                 "sources": final_state.get("formatted_sources", []),
+                "recommendations": final_state.get("recommendations", []),
                 "stage_times": final_state.get("stage_times", {}),
                 "error": final_state.get("error"),
                 "conversation_id": conversation_id,
@@ -247,6 +294,7 @@ class RAGWorkflow:
             return {
                 "summary": "",
                 "sources": [],
+                "recommendations": [],
                 "stage_times": {},
                 "error": str(e),
                 "metadata": {}

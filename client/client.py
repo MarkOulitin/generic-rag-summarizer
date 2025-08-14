@@ -16,6 +16,7 @@ class RAGClient:
         self.stage_times = {}
         self.conversation_id = "default"
         self.chat_history = []  # List of {"role": "user/assistant", "content": str, "timestamp": str}
+        self.current_recommendations = []  # List of recommended follow-up questions
         
     def format_time(self, seconds: float) -> str:
         """Format time in seconds to readable format"""
@@ -55,6 +56,7 @@ class RAGClient:
     def clear_chat_history(self):
         """Clear the chat history"""
         self.chat_history = []
+        self.current_recommendations = []
     
     def format_chat_history(self) -> str:
         """Format chat history for display"""
@@ -68,8 +70,19 @@ class RAGClient:
             formatted_history += f"\n### {role_emoji} {role_name} *({message['timestamp']})*\n\n{message['content']}\n\n---\n"
         
         return formatted_history
+    
+    def format_recommendations(self) -> str:
+        """Format recommendations for display"""
+        if not self.current_recommendations:
+            return "### 💡 Suggested Questions\n\nNo recommendations available yet. Start chatting to get personalized suggestions!"
         
-    async def process_query(self, query: str, summary_callback=None, status_callback=None, history_callback=None):
+        formatted_recommendations = "### 💡 Suggested Questions\n\n"
+        for i, recommendation in enumerate(self.current_recommendations, 1):
+            formatted_recommendations += f"{i}. {recommendation}\n\n"
+        
+        return formatted_recommendations
+        
+    async def process_query(self, query: str, summary_callback=None, status_callback=None, history_callback=None, recommendations_callback=None):
         """Process the query and handle server-sent events"""
 
         self.current_summary = ""
@@ -160,6 +173,12 @@ class RAGClient:
                                 if history_callback:
                                     history_callback(self.format_chat_history())
                             
+                            # Update recommendations if available
+                            if data and 'recommendations' in data:
+                                self.current_recommendations = data['recommendations']
+                                if recommendations_callback:
+                                    recommendations_callback(self.format_recommendations())
+                            
                             if status_callback:
                                 status_callback(self.create_status_report() + "\n✅ **Completed!**")
                             break
@@ -208,19 +227,34 @@ class RAGClient:
         except Exception as e:
             logger.error(f"Error clearing conversation: {e}")
             return False
+    
+    def get_recommendation_buttons_update(self):
+        """Return updates for recommendation buttons based on current recommendations"""
+        updates = []
+        for i in range(5):
+            if i < len(self.current_recommendations):
+                question = self.current_recommendations[i]
+                # Truncate long questions for button display
+                button_text = question if len(question) <= 50 else question[:47] + "..."
+                updates.append(gr.update(value=button_text, visible=True))
+            else:
+                updates.append(gr.update(value="", visible=False))
+        return updates
 
 client = RAGClient()
 def create_gradio_app():
     """Create the Gradio chat interface"""
 
-    async def send_message(message, history_display, status_display):
+    async def send_message(message, history_display, status_display, recommendations_display):
         """Handle sending a chat message"""
         if not message.strip():
-            yield ("", history_display, status_display, "")
+            button_updates = client.get_recommendation_buttons_update()
+            yield ("", history_display, status_display, recommendations_display, "") + tuple(button_updates)
         else:
             summary_output = ""
             status_output = ""
             history_output = ""
+            recommendations_output = ""
             
             def update_summary(content):
                 nonlocal summary_output
@@ -233,46 +267,65 @@ def create_gradio_app():
             def update_history(content):
                 nonlocal history_output
                 history_output = content
+                
+            def update_recommendations(content):
+                nonlocal recommendations_output
+                recommendations_output = content
 
             processing_task = asyncio.create_task(client.process_query(
                 query=message,
                 summary_callback=update_summary,
                 status_callback=update_status,
                 history_callback=update_history,
+                recommendations_callback=update_recommendations,
             ))
             
             while not processing_task.done():
+                button_updates = client.get_recommendation_buttons_update()
                 yield (
                     "",  # Clear input
                     history_output if history_output else history_display,
                     status_output,
+                    recommendations_output if recommendations_output else recommendations_display,
                     summary_output
-                )
+                ) + tuple(button_updates)
                 await asyncio.sleep(0.1)
 
             await processing_task
+            button_updates = client.get_recommendation_buttons_update()
             yield (
                 "",  # Clear input
                 history_output,
                 status_output,
+                recommendations_output,
                 summary_output
-            )
+            ) + tuple(button_updates)
 
     async def clear_chat():
         """Clear the conversation history"""
         success = await client.clear_conversation()
         if success:
+            button_updates = client.get_recommendation_buttons_update()
             return (
                 client.format_chat_history(),
                 "Conversation cleared successfully!",
+                client.format_recommendations(),
                 ""
-            )
+            ) + tuple(button_updates)
         else:
+            button_updates = client.get_recommendation_buttons_update()
             return (
                 client.format_chat_history(),
                 "Failed to clear conversation",
+                client.format_recommendations(),
                 ""
-            )
+            ) + tuple(button_updates)
+
+    def use_recommendation(rec_index):
+        """Use a recommendation as input"""
+        if 0 <= rec_index < len(client.current_recommendations):
+            return client.current_recommendations[rec_index]
+        return ""
 
     with gr.Blocks(title="AI Powered Chatbot", theme=gr.themes.Soft()) as app:
         gr.Markdown("# 🤖 AI Powered Chatbot")
@@ -309,26 +362,51 @@ def create_gradio_app():
                 status_output_md = gr.Markdown(
                     "### Status\nReady to chat..."
                 )
+                
+                # Recommendations panel
+                recommendations_display = gr.Markdown(
+                    value=client.format_recommendations(),
+                    label="Suggested Questions",
+                    container=True
+                )
+                
+                # Add recommendation buttons for easy clicking
+                with gr.Column():
+                    rec_btn_1 = gr.Button("", visible=False, variant="secondary", size="sm")
+                    rec_btn_2 = gr.Button("", visible=False, variant="secondary", size="sm")
+                    rec_btn_3 = gr.Button("", visible=False, variant="secondary", size="sm")
+                    rec_btn_4 = gr.Button("", visible=False, variant="secondary", size="sm")
+                    rec_btn_5 = gr.Button("", visible=False, variant="secondary", size="sm")
         
         # Event handlers
         send_btn.click(
             fn=send_message,
-            inputs=[message_input, chat_history, status_output_md],
-            outputs=[message_input, chat_history, status_output_md, current_response_holder]
+            inputs=[message_input, chat_history, status_output_md, recommendations_display],
+            outputs=[message_input, chat_history, status_output_md, recommendations_display, current_response_holder, 
+                     rec_btn_1, rec_btn_2, rec_btn_3, rec_btn_4, rec_btn_5]
         )
         
         # Allow Enter key to send message
         message_input.submit(
             fn=send_message,
-            inputs=[message_input, chat_history, status_output_md],
-            outputs=[message_input, chat_history, status_output_md, current_response_holder]
+            inputs=[message_input, chat_history, status_output_md, recommendations_display],
+            outputs=[message_input, chat_history, status_output_md, recommendations_display, current_response_holder,
+                     rec_btn_1, rec_btn_2, rec_btn_3, rec_btn_4, rec_btn_5]
         )
         
         clear_btn.click(
             fn=clear_chat,
             inputs=[],
-            outputs=[chat_history, status_output_md, current_response_holder]
+            outputs=[chat_history, status_output_md, recommendations_display, current_response_holder,
+                     rec_btn_1, rec_btn_2, rec_btn_3, rec_btn_4, rec_btn_5]
         )
+        
+        # Recommendation button click handlers
+        rec_btn_1.click(fn=lambda: use_recommendation(0), outputs=message_input)
+        rec_btn_2.click(fn=lambda: use_recommendation(1), outputs=message_input)
+        rec_btn_3.click(fn=lambda: use_recommendation(2), outputs=message_input)
+        rec_btn_4.click(fn=lambda: use_recommendation(3), outputs=message_input)
+        rec_btn_5.click(fn=lambda: use_recommendation(4), outputs=message_input)
         
         copy_conversation_btn.click(
             fn=None,
