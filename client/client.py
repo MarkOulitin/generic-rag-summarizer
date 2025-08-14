@@ -14,6 +14,8 @@ class RAGClient:
     def __init__(self):
         self.current_summary = ""
         self.stage_times = {}
+        self.conversation_id = "default"
+        self.chat_history = []  # List of {"role": "user/assistant", "content": str, "timestamp": str}
         
     def format_time(self, seconds: float) -> str:
         """Format time in seconds to readable format"""
@@ -40,12 +42,45 @@ class RAGClient:
                 report += f"✅ **{name}** - {time_str}\n\n"
         
         return report
+    
+    def add_message_to_history(self, role: str, content: str):
+        """Add a message to chat history"""
+        timestamp = time.strftime("%H:%M", time.localtime())
+        self.chat_history.append({
+            "role": role,
+            "content": content,
+            "timestamp": timestamp
+        })
+    
+    def clear_chat_history(self):
+        """Clear the chat history"""
+        self.chat_history = []
+    
+    def format_chat_history(self) -> str:
+        """Format chat history for display"""
+        if not self.chat_history:
+            return "No messages yet. Start the conversation!"
         
-    async def process_query(self, query: str, summary_callback=None, status_callback=None):
+        formatted_history = ""
+        for message in self.chat_history:
+            role_emoji = "👤" if message["role"] == "user" else "🤖"
+            role_name = "You" if message["role"] == "user" else "Assistant"
+            formatted_history += f"\n### {role_emoji} {role_name} *({message['timestamp']})*\n\n{message['content']}\n\n---\n"
+        
+        return formatted_history
+        
+    async def process_query(self, query: str, summary_callback=None, status_callback=None, history_callback=None):
         """Process the query and handle server-sent events"""
 
         self.current_summary = ""
         self.stage_times = {}
+
+        # Add user message to history
+        self.add_message_to_history("user", query)
+        
+        # Update history display
+        if history_callback:
+            history_callback(self.format_chat_history())
 
         # Clear previous results
         if status_callback:
@@ -58,7 +93,11 @@ class RAGClient:
             logger.info(f"Connecting to {uri}")
             async with websockets.connect(uri) as websocket:
                 logger.info(f"Connected to {uri}")
-                message = {"query": query}
+                message = {
+                    "action": "chat",
+                    "message": query,
+                    "conversation_id": self.conversation_id
+                }
                 logger.info(f"Sending message: {message}")
 
                 await websocket.send(json.dumps(message))
@@ -115,6 +154,12 @@ class RAGClient:
                             stage_time = time.time()
                             self.stage_times['generation'] = stage_time - self.stage_times['generation']
                             
+                            # Add assistant response to history
+                            if self.current_summary:
+                                self.add_message_to_history("assistant", self.current_summary)
+                                if history_callback:
+                                    history_callback(self.format_chat_history())
+                            
                             if status_callback:
                                 status_callback(self.create_status_report() + "\n✅ **Completed!**")
                             break
@@ -138,109 +183,178 @@ class RAGClient:
             if status_callback:
                 status_callback(error_message)
 
+    async def clear_conversation(self):
+        """Clear the conversation history both locally and on server"""
+        try:
+            uri = f"ws://{os.environ.get('SERVER_HOST', 'localhost')}:{os.environ.get('SERVER_PORT', 9090)}/"
+            async with websockets.connect(uri) as websocket:
+                message = {
+                    "action": "clear_conversation",
+                    "conversation_id": self.conversation_id
+                }
+                await websocket.send(json.dumps(message))
+                
+                # Wait for confirmation
+                response_json = await websocket.recv()
+                response_data = json.loads(response_json)
+                
+                if response_data.get("event") == "conversation_cleared":
+                    self.clear_chat_history()
+                    logger.info("Conversation cleared successfully")
+                    return True
+                else:
+                    logger.error(f"Failed to clear conversation: {response_data}")
+                    return False
+        except Exception as e:
+            logger.error(f"Error clearing conversation: {e}")
+            return False
+
 client = RAGClient()
 def create_gradio_app():
-    """Create the Gradio interface"""
+    """Create the Gradio chat interface"""
 
-    async def process_request(query):
-        """Handle the request processing as an async generator"""
-        
-        summary_output = ""
-        status_output = ""
-        
-        def update_summary(content):
-            nonlocal summary_output
-            summary_output = content
-        
-        def update_status(content):
-            nonlocal status_output
-            status_output = content
+    async def send_message(message, history_display, status_display):
+        """Handle sending a chat message"""
+        if not message.strip():
+            yield ("", history_display, status_display, "")
+        else:
+            summary_output = ""
+            status_output = ""
+            history_output = ""
+            
+            def update_summary(content):
+                nonlocal summary_output
+                summary_output = content
+            
+            def update_status(content):
+                nonlocal status_output
+                status_output = content
+                
+            def update_history(content):
+                nonlocal history_output
+                history_output = content
 
-        processing_task = asyncio.create_task(client.process_query(
-            query=query,
-            summary_callback=update_summary,
-            status_callback=update_status,
-        ))
-        
-        while not processing_task.done():
+            processing_task = asyncio.create_task(client.process_query(
+                query=message,
+                summary_callback=update_summary,
+                status_callback=update_status,
+                history_callback=update_history,
+            ))
+            
+            while not processing_task.done():
+                yield (
+                    "",  # Clear input
+                    history_output if history_output else history_display,
+                    status_output,
+                    summary_output
+                )
+                await asyncio.sleep(0.1)
+
+            await processing_task
             yield (
-                summary_output,
+                "",  # Clear input
+                history_output,
                 status_output,
-                gr.update(visible=bool(client.current_summary)),
-                summary_output 
+                summary_output
             )
-            await asyncio.sleep(0.1)
 
-        await processing_task
-        yield (
-            summary_output,
-            status_output,
-            gr.update(visible=bool(client.current_summary)),
-            summary_output
-        )
+    async def clear_chat():
+        """Clear the conversation history"""
+        success = await client.clear_conversation()
+        if success:
+            return (
+                client.format_chat_history(),
+                "Conversation cleared successfully!",
+                ""
+            )
+        else:
+            return (
+                client.format_chat_history(),
+                "Failed to clear conversation",
+                ""
+            )
 
-    with gr.Blocks(title="AI Powered Ask me anything", theme=gr.themes.Soft()) as app:
-        gr.Markdown("# 🤖 AI Powered Ask me anything")
-        gr.Markdown("Enter your query to get AI-powered summaries.")
+    with gr.Blocks(title="AI Powered Chatbot", theme=gr.themes.Soft()) as app:
+        gr.Markdown("# 🤖 AI Powered Chatbot")
+        gr.Markdown("Have a conversation with an AI assistant that can access and cite relevant information.")
         
         with gr.Row():
             with gr.Column(scale=2):
-                query = gr.Textbox(
-                    label="Your Query",
-                    placeholder="e.g., What are the latest advances in transformer models?",
-                    value="What are the latest trends in cybersecurity?",
-                    lines=3
+                # Chat history display
+                chat_history = gr.Markdown(
+                    value=client.format_chat_history(),
+                    label="Conversation History",
+                    elem_id="chat_history",
+                    container=True
                 )
                 
-                submit_btn = gr.Button("🚀 Generate Summary", variant="primary", size="lg")
+                # Input and controls
+                with gr.Row():
+                    message_input = gr.Textbox(
+                        placeholder="Type your message here...",
+                        label="Your Message",
+                        scale=4,
+                        lines=2
+                    )
+                    send_btn = gr.Button("📤 Send", variant="primary", scale=1)
                 
-                summary_output_md = gr.Markdown(
-                    label="Generated Summary",
-                    value=""
-                )
+                with gr.Row():
+                    clear_btn = gr.Button("🗑️ Clear Chat", variant="secondary")
+                    copy_conversation_btn = gr.Button("📋 Copy Conversation", variant="secondary")
                 
-                summary_holder = gr.Textbox(visible=False, label="summary_holder")
-                
-                copy_btn = gr.Button(
-                    "📋 Copy to clipboard",
-                    visible=False,
-                )
+                # Hidden textbox to hold current response for copying
+                current_response_holder = gr.Textbox(visible=False, label="current_response_holder")
             
             with gr.Column(scale=1):
                 status_output_md = gr.Markdown(
-                    "### Processing Status\nReady to process your query..."
+                    "### Status\nReady to chat..."
                 )
         
-        submit_btn.click(
-            fn=process_request,
-            inputs=[query],
-            outputs=[summary_output_md, status_output_md, copy_btn, summary_holder]
+        # Event handlers
+        send_btn.click(
+            fn=send_message,
+            inputs=[message_input, chat_history, status_output_md],
+            outputs=[message_input, chat_history, status_output_md, current_response_holder]
         )
         
-        copy_btn.click(
-            fn=None,                  
-            inputs=summary_holder,
-            outputs=None,             
+        # Allow Enter key to send message
+        message_input.submit(
+            fn=send_message,
+            inputs=[message_input, chat_history, status_output_md],
+            outputs=[message_input, chat_history, status_output_md, current_response_holder]
+        )
+        
+        clear_btn.click(
+            fn=clear_chat,
+            inputs=[],
+            outputs=[chat_history, status_output_md, current_response_holder]
+        )
+        
+        copy_conversation_btn.click(
+            fn=None,
+            inputs=chat_history,
+            outputs=None,
             js="""
-                (text) => {
-                    if (text === null || text === undefined || text === "") {
-                        window.alert("Error: Nothing to copy. The summary is empty.");
+                (history) => {
+                    if (history === null || history === undefined || history === "") {
+                        window.alert("No conversation to copy.");
                         return;
                     }
-                    navigator.clipboard.writeText(text);
-                    window.alert("Summary copied to clipboard!");
+                    navigator.clipboard.writeText(history);
+                    window.alert("Conversation copied to clipboard!");
                 }
             """
         )
         
         gr.Examples(
             examples=[
-                ["What are the key innovations in transformer architectures?", "AI researcher"],
-                ["How has natural language processing evolved in recent years?", "PhD student"],
-                ["What are the practical applications of large language models?", "industry professional"],
-                ["What are the latest developments in retrieval-augmented generation?", "research scientist"]
+                ["What are the latest trends in artificial intelligence?"],
+                ["Can you explain how transformer models work?"],
+                ["What are the security implications of large language models?"],
+                ["How is AI being used in healthcare today?"],
+                ["Tell me about recent developments in computer vision."]
             ],
-            inputs=[query],
+            inputs=[message_input],
         )
     
     return app

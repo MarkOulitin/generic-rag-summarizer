@@ -4,29 +4,33 @@ from openai import AsyncOpenAI
 api_key = os.environ.get('OPENAI_API_KEY')
 client = AsyncOpenAI(api_key=api_key)
 topic_domain = os.environ['TOPICS_DOMAIN']
-generation_system_prompt = f"""You are an assistant expert in the topic \"{topic_domain}\". Your purpose is to synthesize a single, cohesive and comprehensive summary with proper citations. The summary should include correctly formatted citations and a complete reference list."""
+generation_system_prompt = f"""You are a helpful AI assistant and expert in the topic \"{topic_domain}\". You are having a conversation with a user and should provide informative, accurate responses based on the provided source material. Your responses should be conversational yet informative, with proper citations and references when applicable."""
 
 generation_prompt_template = """
-Your task is to generate a comprehensive summary based on the provided chunks of information.
+Your task is to generate a comprehensive response based on the provided chunks of information and conversation context.
 
-User Query:
+{conversation_context}
+
+Current User Query:
 {user_query}
 
 --- Instructions ---
-1. Synthesize findings: Integrate information from all provided chunks to create a cohesive summary that directly answers the user's query.
-2. Mandatory in-text citations: You MUST cite all information from the source articles using only numerical in-text citations in square brackets. Do not use any other format.
+1. Consider conversation context: Use the previous conversation to understand the context and provide relevant follow-up responses. Reference previous parts of the conversation when appropriate.
+2. Synthesize findings: Integrate information from all provided chunks to create a cohesive response that directly answers the user's current query.
+3. Mandatory in-text citations: You MUST cite all information from the source articles using only numerical in-text citations in square brackets. Do not use any other format.
     - Correct Format: `[1]`, `[2]`, or `[1, 3]`
     - Incorrect Format: `(Source 1)`, `(Article 1)`, `[Source 1]`
     - Example: "SGLT2 inhibitors were shown to reduce cardiovascular events [1, 4]."
-3. Generate a Reference List: After the summary, add a section titled "References". In this section, create a numbered list corresponding to the in-text citations. Each entry must include the source number and URL.
-5. Concise and focused: Only include information that is directly relevant to the user's query.
-6. Source material only: Base your summary exclusively on the content of provided below. Do not introduce any external information or knowledge.
+4. Generate a Reference List: After the response, add a section titled "References". In this section, create a numbered list corresponding to the in-text citations. Each entry must include the source number and URL.
+5. Conversational tone: Maintain a natural, conversational tone appropriate for a chatbot while being informative and comprehensive.
+6. Concise and focused: Only include information that is directly relevant to the user's query and conversation context.
+7. Source material only: Base your response exclusively on the content of provided below and conversation history. Do not introduce any external information or knowledge.
 
 Document Chunks:
 {formatted_chunks_string}
 """
 
-async def generate(query, chunks, stream_callback=None):
+async def generate(query, chunks, conversation_history=None, stream_callback=None):
     formatted_sources = []
     formatted_chunks_list = []
     
@@ -54,7 +58,20 @@ Content: {content}
         formatted_chunks_list.append(chunk_text)
     
     formatted_chunks_string = '\n'.join(formatted_chunks_list)
+    
+    # Format conversation context
+    conversation_context = ""
+    if conversation_history and len(conversation_history) > 0:
+        conversation_context = "Previous Conversation:\n"
+        for msg in conversation_history:
+            role = "User" if msg["role"] == "user" else "Assistant"
+            conversation_context += f"{role}: {msg['content']}\n"
+        conversation_context += "\n"
+    else:
+        conversation_context = "This is the start of a new conversation.\n\n"
+    
     generation_prompt = generation_prompt_template.format(
+        conversation_context=conversation_context,
         user_query=query,
         formatted_chunks_string=formatted_chunks_string
     )

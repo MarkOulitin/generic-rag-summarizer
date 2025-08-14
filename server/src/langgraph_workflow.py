@@ -16,9 +16,36 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+class ConversationMemory:
+    """Manages conversation history for different conversation IDs"""
+    
+    def __init__(self):
+        self.conversations = {}  # {conversation_id: List[Dict]}
+        
+    def get_conversation_history(self, conversation_id: str) -> List[Dict[str, Any]]:
+        """Get conversation history for a specific conversation ID"""
+        return self.conversations.get(conversation_id, [])
+    
+    def add_message(self, conversation_id: str, role: str, content: str):
+        """Add a message to the conversation history"""
+        if conversation_id not in self.conversations:
+            self.conversations[conversation_id] = []
+        
+        self.conversations[conversation_id].append({
+            "role": role,
+            "content": content
+        })
+    
+    def clear_conversation(self, conversation_id: str):
+        """Clear conversation history for a specific conversation ID"""
+        if conversation_id in self.conversations:
+            del self.conversations[conversation_id]
+
 class WorkflowState(TypedDict):
     """State that gets passed between workflow nodes"""
     query: str
+    conversation_id: str
+    conversation_history: List[Dict[str, Any]]  # List of {"role": "user/assistant", "content": str}
     
     # Retrieval stage
     retrieved_chunks: List[Dict[str, Any]]
@@ -53,8 +80,15 @@ class RAGWorkflow:
         # Store the callback separately to avoid serialization issues
         self._generate_callback = None
         
+        # Initialize conversation memory
+        self.conversation_memory = ConversationMemory()
+        
         # Build the workflow graph
         self.workflow = self._build_workflow()
+        
+    def clear_conversation(self, conversation_id: str):
+        """Clear conversation history for a specific conversation ID"""
+        self.conversation_memory.clear_conversation(conversation_id)
         
     def _build_workflow(self) -> StateGraph:
         """Build the LangGraph workflow"""
@@ -142,7 +176,7 @@ class RAGWorkflow:
                 return state
             
             generated_summary, formatted_sources = await generation.generate(
-                query, chunks, self._generate_callback
+                query, chunks, state['conversation_history'], self._generate_callback
             )
             elapsed_time = time.time() - start_time
             
@@ -161,14 +195,22 @@ class RAGWorkflow:
             state['error'] = f"Generation failed: {str(e)}"
             return state
         
-    async def run_workflow(self, query: str, generate_callback=None) -> Dict[str, Any]:
+    async def run_workflow(self, query: str, conversation_id: str = "default", generate_callback=None) -> Dict[str, Any]:
         try:
             # Store the callback in the instance to avoid serialization issues
             self._generate_callback = generate_callback
             
+            # Get conversation history
+            conversation_history = self.conversation_memory.get_conversation_history(conversation_id)
+            
+            # Add user query to conversation history
+            self.conversation_memory.add_message(conversation_id, "user", query)
+            
             # Initialize state
             initial_state = WorkflowState(
                 query=query,
+                conversation_id=conversation_id,
+                conversation_history=conversation_history,
                 retrieved_chunks=[],
                 reranked_chunks=[],
                 generated_summary="",
@@ -179,8 +221,12 @@ class RAGWorkflow:
             )
             
             # Run the workflow
-            config = {"configurable": {"thread_id": "rag_workflow"}}
+            config = {"configurable": {"thread_id": conversation_id}}
             final_state = await self.workflow.ainvoke(initial_state, config=config)
+            
+            # Add assistant response to conversation history
+            if final_state.get("generated_summary") and not final_state.get("error"):
+                self.conversation_memory.add_message(conversation_id, "assistant", final_state["generated_summary"])
             
             # Return results
             return {
@@ -188,6 +234,7 @@ class RAGWorkflow:
                 "sources": final_state.get("formatted_sources", []),
                 "stage_times": final_state.get("stage_times", {}),
                 "error": final_state.get("error"),
+                "conversation_id": conversation_id,
                 "metadata": {
                     "retrieval_count": len(final_state.get("retrieved_chunks", [])),
                     "rerank_count": len(final_state.get("reranked_chunks", [])),
@@ -214,7 +261,7 @@ def get_workflow() -> RAGWorkflow:
         workflow_instance = RAGWorkflow()
     return workflow_instance
 
-async def process_rag_query(query: str, generate_callback=None) -> Dict[str, Any]:
+async def process_rag_query(query: str, conversation_id: str = "default", generate_callback=None) -> Dict[str, Any]:
     """Process a RAG query using the LangGraph workflow"""
     workflow = get_workflow()
-    return await workflow.run_workflow(query, generate_callback)
+    return await workflow.run_workflow(query, conversation_id, generate_callback)

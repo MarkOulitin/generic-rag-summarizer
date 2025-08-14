@@ -12,14 +12,24 @@ from logger import logger
 RETRIVAL_TOP_K = int(os.environ.get('RERANK_TOP_K'))
 RERANK_TOP_K = int(os.environ.get('RETRIVAL_TOP_K'))
 
-async def generate(websocket, query):
-    logger.info(f"Parsed JSON - Query: {query}")
+
+async def handle_chat_message(websocket, message_data):
+    """Handle chat message with conversation context"""
+    query = message_data.get("message", "")
+    conversation_id = message_data.get("conversation_id", "default")
+    
+    logger.info(f"Chat message - Query: {query}, Conversation ID: {conversation_id}")
+    
     try:
         async def generate_callback(text_chunk):
             event = {"event": "generating", "data": text_chunk}
             await websocket.send(json.dumps(event))
-            logger.info(f"Sent event: generating")
-        summary = await process_rag_query(query, generate_callback=generate_callback)
+            
+        summary = await process_rag_query(
+            query, 
+            conversation_id=conversation_id, 
+            generate_callback=generate_callback
+        )
             
         if summary.get('error') is None:
             event = {"event": "completed", "data": summary}
@@ -34,6 +44,23 @@ async def generate(websocket, query):
         trace = traceback.format_exc()
         logger.error(f"Sent event: error, Error: {e}\n{trace}")
 
+async def handle_clear_conversation(websocket, message_data):
+    """Handle clearing conversation history"""
+    conversation_id = message_data.get("conversation_id", "default")
+    logger.info(f"Clearing conversation: {conversation_id}")
+    
+    try:
+        workflow = get_workflow()
+        workflow.clear_conversation(conversation_id)
+        
+        event = {"event": "conversation_cleared", "data": {"conversation_id": conversation_id}}
+        await websocket.send(json.dumps(event))
+        logger.info(f"Conversation {conversation_id} cleared successfully")
+    except Exception as e:
+        event = {"event": "error", "data": str(e)}
+        await websocket.send(json.dumps(event))
+        logger.error(f"Error clearing conversation: {e}")
+
 async def websocket_handler(websocket):
     logger.info(f"Client connected")
     try:
@@ -41,13 +68,33 @@ async def websocket_handler(websocket):
             logger.info(f"Received message: {message}")
             try:
                 data = json.loads(message)
-                if "query" in data:
-                    query = data["query"]
-                    await generate(websocket, query)
+                action = data.get("action", "chat")
+                
+                if action == "chat":
+                    # Handle chat message
+                    if "message" in data:
+                        await handle_chat_message(websocket, data)
+                    elif "query" in data:  # Backward compatibility
+                        message_data = {
+                            "message": data["query"],
+                            "conversation_id": data.get("conversation_id", "default")
+                        }
+                        await handle_chat_message(websocket, message_data)
+                    else:
+                        error_response = {
+                            "event": "error",
+                            "data": "Missing 'message' or 'query' in JSON body."
+                        }
+                        await websocket.send(json.dumps(error_response))
+                        logger.error(f"Sent error response: {json.dumps(error_response)}")
+                        
+                elif action == "clear_conversation":
+                    await handle_clear_conversation(websocket, data)
+                    
                 else:
                     error_response = {
                         "event": "error",
-                        "data": "Missing 'query' in JSON body."
+                        "data": f"Unknown action: {action}"
                     }
                     await websocket.send(json.dumps(error_response))
                     logger.error(f"Sent error response: {json.dumps(error_response)}")
