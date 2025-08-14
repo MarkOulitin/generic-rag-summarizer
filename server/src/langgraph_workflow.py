@@ -4,8 +4,8 @@ import retrival
 import time
 import rerenking
 import generation
-
-from typing import List, Dict, Any, TypedDict, Optional
+import traceback
+from typing import List, Dict, Any, TypedDict, Optional, Callable, Awaitable
 from dataclasses import dataclass
 
 from langgraph.graph import StateGraph, END
@@ -33,7 +33,7 @@ class WorkflowState(TypedDict):
     # Progress tracking
     current_stage: str
     stage_times: Dict[str, float]
-    error: Optional[str]
+    error: Optional[str] 
 
 @dataclass
 class WorkflowConfig:
@@ -49,6 +49,9 @@ class RAGWorkflow:
         self.config = config or WorkflowConfig()
         self.config.retrieval_top_k = int(os.getenv('RETRIVAL_TOP_K', self.config.retrieval_top_k))
         self.config.rerank_top_k = int(os.getenv('RERANK_TOP_K', self.config.rerank_top_k))
+        
+        # Store the callback separately to avoid serialization issues
+        self._generate_callback = None
         
         # Build the workflow graph
         self.workflow = self._build_workflow()
@@ -138,7 +141,9 @@ class RAGWorkflow:
                 state['formatted_sources'] = []
                 return state
             
-            generated_summary, formatted_sources = await generation.generate(query, chunks)
+            generated_summary, formatted_sources = await generation.generate(
+                query, chunks, self._generate_callback
+            )
             elapsed_time = time.time() - start_time
             
             logger.info(f"Generated summary ({len(generated_summary)} chars) in {elapsed_time:.2f}s")
@@ -156,9 +161,11 @@ class RAGWorkflow:
             state['error'] = f"Generation failed: {str(e)}"
             return state
         
-    async def run_workflow(self, query: str) -> Dict[str, Any]:
-        """Run the complete RAG workflow"""
+    async def run_workflow(self, query: str, generate_callback=None) -> Dict[str, Any]:
         try:
+            # Store the callback in the instance to avoid serialization issues
+            self._generate_callback = generate_callback
+            
             # Initialize state
             initial_state = WorkflowState(
                 query=query,
@@ -188,7 +195,8 @@ class RAGWorkflow:
             }
             
         except Exception as e:
-            logger.error(f"Workflow execution failed: {e}")
+            trace = traceback.format_exc()
+            logger.error(f"Workflow execution failed, Error: {e}\n{trace}")
             return {
                 "summary": "",
                 "sources": [],
@@ -206,7 +214,7 @@ def get_workflow() -> RAGWorkflow:
         workflow_instance = RAGWorkflow()
     return workflow_instance
 
-async def process_rag_query(query: str) -> Dict[str, Any]:
+async def process_rag_query(query: str, generate_callback=None) -> Dict[str, Any]:
     """Process a RAG query using the LangGraph workflow"""
     workflow = get_workflow()
-    return await workflow.run_workflow(query)
+    return await workflow.run_workflow(query, generate_callback)

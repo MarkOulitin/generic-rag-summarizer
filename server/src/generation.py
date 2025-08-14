@@ -26,7 +26,7 @@ Document Chunks:
 {formatted_chunks_string}
 """
 
-async def generate(query, chunks):
+async def generate(query, chunks, stream_callback=None):
     formatted_sources = []
     formatted_chunks_list = []
     
@@ -58,19 +58,48 @@ Content: {content}
         user_query=query,
         formatted_chunks_string=formatted_chunks_string
     )
-    response = await client.chat.completions.create(
-        model=os.environ.get('OPENAI_MODEL'),
-        messages=[
-            {
-                "role": "system",
-                "content": generation_system_prompt
-            },
-            {
-                "role": "user",
-                "content": generation_prompt
-            }
-        ]
-    )
-    
-    generated_summary = response.choices[0].message.content
-    return generated_summary, formatted_sources
+    # Choose streaming or non-streaming based on callback presence
+    if stream_callback:
+        # Streaming mode
+        response = await client.chat.completions.create(
+            model=os.environ.get('OPENAI_MODEL'),
+            messages=[
+                {
+                    "role": "system",
+                    "content": generation_system_prompt
+                },
+                {
+                    "role": "user",
+                    "content": generation_prompt
+                }
+            ],
+            stream=True
+        )
+        
+        generated_summary = ""
+        async for chunk in response:
+            if chunk.choices[0].delta.content is not None:
+                content = chunk.choices[0].delta.content
+                generated_summary += content
+                # Call the callback with the text chunk
+                await stream_callback(content)
+        
+        return generated_summary, formatted_sources
+    else:
+        # Non-streaming mode (original behavior)
+        response = await client.chat.completions.create(
+            model=os.environ.get('OPENAI_MODEL'),
+            messages=[
+                {
+                    "role": "system",
+                    "content": generation_system_prompt
+                },
+                {
+                    "role": "user",
+                    "content": generation_prompt
+                }
+            ]
+        )
+        
+        generated_summary = response.choices[0].message.content
+        return generated_summary, formatted_sources
