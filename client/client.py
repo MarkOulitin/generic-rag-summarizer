@@ -119,6 +119,7 @@ class RAGClient:
                     while True:
                         response_json = await websocket.recv()
                         response_data = json.loads(response_json)
+                        logger.info(response_json)
                         event_type = response_data.get('event')
                         data = response_data.get('data')
 
@@ -249,7 +250,7 @@ def create_gradio_app():
         """Handle sending a chat message"""
         if not message.strip():
             button_updates = client.get_recommendation_buttons_update()
-            yield ("", history_display, status_display, recommendations_display, "") + tuple(button_updates)
+            yield ("", history_display, status_display, recommendations_display, "", gr.update(visible=False)) + tuple(button_updates)
         else:
             summary_output = ""
             status_output = ""
@@ -287,7 +288,8 @@ def create_gradio_app():
                     history_output if history_output else history_display,
                     status_output,
                     recommendations_output if recommendations_output else recommendations_display,
-                    summary_output
+                    summary_output,  # current_response_holder
+                    gr.update(value=summary_output, visible=bool(summary_output))  # current_response_display
                 ) + tuple(button_updates)
                 await asyncio.sleep(0.1)
 
@@ -298,7 +300,8 @@ def create_gradio_app():
                 history_output,
                 status_output,
                 recommendations_output,
-                summary_output
+                summary_output,  # current_response_holder
+                gr.update(value="", visible=False)  # current_response_display - hide after completion
             ) + tuple(button_updates)
 
     async def clear_chat():
@@ -310,7 +313,8 @@ def create_gradio_app():
                 client.format_chat_history(),
                 "Conversation cleared successfully!",
                 client.format_recommendations(),
-                ""
+                "",  # current_response_holder
+                gr.update(value="", visible=False)  # current_response_display
             ) + tuple(button_updates)
         else:
             button_updates = client.get_recommendation_buttons_update()
@@ -318,7 +322,8 @@ def create_gradio_app():
                 client.format_chat_history(),
                 "Failed to clear conversation",
                 client.format_recommendations(),
-                ""
+                "",  # current_response_holder
+                gr.update(value="", visible=False)  # current_response_display
             ) + tuple(button_updates)
 
     def use_recommendation(rec_index):
@@ -338,6 +343,14 @@ def create_gradio_app():
                     value=client.format_chat_history(),
                     label="Conversation History",
                     elem_id="chat_history",
+                    container=True
+                )
+                
+                # Current response display (streaming)
+                current_response_display = gr.Markdown(
+                    value="",
+                    label="Current Response",
+                    visible=False,
                     container=True
                 )
                 
@@ -382,8 +395,8 @@ def create_gradio_app():
         send_btn.click(
             fn=send_message,
             inputs=[message_input, chat_history, status_output_md, recommendations_display],
-            outputs=[message_input, chat_history, status_output_md, recommendations_display, current_response_holder, 
-                     rec_btn_1, rec_btn_2, rec_btn_3, rec_btn_4, rec_btn_5]
+            outputs=[message_input, chat_history, status_output_md, recommendations_display, current_response_holder,
+                     current_response_display, rec_btn_1, rec_btn_2, rec_btn_3, rec_btn_4, rec_btn_5]
         )
         
         # Allow Enter key to send message
@@ -391,14 +404,14 @@ def create_gradio_app():
             fn=send_message,
             inputs=[message_input, chat_history, status_output_md, recommendations_display],
             outputs=[message_input, chat_history, status_output_md, recommendations_display, current_response_holder,
-                     rec_btn_1, rec_btn_2, rec_btn_3, rec_btn_4, rec_btn_5]
+                     current_response_display, rec_btn_1, rec_btn_2, rec_btn_3, rec_btn_4, rec_btn_5]
         )
         
         clear_btn.click(
             fn=clear_chat,
             inputs=[],
             outputs=[chat_history, status_output_md, recommendations_display, current_response_holder,
-                     rec_btn_1, rec_btn_2, rec_btn_3, rec_btn_4, rec_btn_5]
+                     current_response_display, rec_btn_1, rec_btn_2, rec_btn_3, rec_btn_4, rec_btn_5]
         )
         
         # Recommendation button click handlers
