@@ -4,6 +4,7 @@ import retrival
 import time
 import rerenking
 import generation
+import answer_evaluator
 import traceback
 from typing import List, Dict, Any, TypedDict, Optional, Callable, Awaitable
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ load_dotenv()
 class WorkflowState(TypedDict):
     """State that gets passed between workflow nodes"""
     query: str
+    original_query: str  # Track the original user query
     
     # Retrieval stage
     retrieved_chunks: List[Dict[str, Any]]
@@ -29,6 +31,13 @@ class WorkflowState(TypedDict):
     # Generation stage
     generated_summary: str
     formatted_sources: List[Dict[str, Any]]
+    
+    # Agentic behavior tracking
+    iteration_count: int
+    max_iterations: int
+    is_answer_adequate: bool
+    evaluation_details: Dict[str, Any]
+    query_history: List[str]  # Track query refinements
     
     # Progress tracking
     current_stage: str
@@ -41,6 +50,7 @@ class WorkflowConfig:
     retrieval_top_k: int = 50
     rerank_top_k: int = 10
     max_summary_length: int = 5000
+    max_iterations: int = 3  # Maximum number of query refinement iterations
 
 class RAGWorkflow:
     """LangGraph-based RAG workflow implementation"""
@@ -49,6 +59,7 @@ class RAGWorkflow:
         self.config = config or WorkflowConfig()
         self.config.retrieval_top_k = int(os.getenv('RETRIVAL_TOP_K', self.config.retrieval_top_k))
         self.config.rerank_top_k = int(os.getenv('RERANK_TOP_K', self.config.rerank_top_k))
+        self.config.max_iterations = int(os.getenv('MAX_ITERATIONS', self.config.max_iterations))
         
         # Store the callback separately to avoid serialization issues
         self._generate_callback = None
@@ -57,19 +68,34 @@ class RAGWorkflow:
         self.workflow = self._build_workflow()
         
     def _build_workflow(self) -> StateGraph:
-        """Build the LangGraph workflow"""
+        """Build the LangGraph workflow with agentic behavior"""
         workflow = StateGraph(WorkflowState)
         
         # Define workflow nodes
         workflow.add_node("retrieve", self._retrieve_chunks)
         workflow.add_node("rerank", self._rerank_chunks)
         workflow.add_node("generate", self._generate_summary)
+        workflow.add_node("evaluate", self._evaluate_answer)
+        workflow.add_node("rewrite_query", self._rewrite_query)
         
-        # Define workflow edges
+        # Define workflow edges with conditional routing
         workflow.set_entry_point("retrieve")
         workflow.add_edge("retrieve", "rerank")
         workflow.add_edge("rerank", "generate")
-        workflow.add_edge("generate", END)
+        workflow.add_edge("generate", "evaluate")
+        
+        # Conditional routing after evaluation
+        workflow.add_conditional_edges(
+            "evaluate",
+            self._should_continue_or_end,
+            {
+                "continue": "rewrite_query",
+                "end": END
+            }
+        )
+        
+        # After rewriting query, go back to retrieval
+        workflow.add_edge("rewrite_query", "retrieve")
         
         # Add memory checkpointing
         memory = MemorySaver()
@@ -160,6 +186,97 @@ class RAGWorkflow:
             logger.error(f"Error in generate_summary: {e}")
             state['error'] = f"Generation failed: {str(e)}"
             return state
+    
+    async def _evaluate_answer(self, state: WorkflowState) -> WorkflowState:
+        """Evaluate if the generated answer adequately addresses the query"""
+        start_time = time.time()
+        
+        try:
+            query = state['original_query']  # Use original query for evaluation
+            generated_summary = state['generated_summary']
+            
+            logger.info(f"Evaluating answer adequacy for iteration {state['iteration_count']}")
+            
+            is_adequate, evaluation_details = await answer_evaluator.evaluate_answer(query, generated_summary)
+            elapsed_time = time.time() - start_time
+            
+            logger.info(f"Answer evaluation: adequate={is_adequate}, confidence={evaluation_details.get('confidence', 0):.2f}")
+            
+            # Update state
+            state['is_answer_adequate'] = is_adequate
+            state['evaluation_details'] = evaluation_details
+            state['current_stage'] = 'evaluated'
+            state['stage_times']['evaluation'] = elapsed_time
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error in evaluate_answer: {e}")
+            # Default to adequate to prevent infinite loops on evaluation errors
+            state['is_answer_adequate'] = True
+            state['evaluation_details'] = {"error": str(e)}
+            return state
+    
+    async def _rewrite_query(self, state: WorkflowState) -> WorkflowState:
+        """Rewrite the query to improve retrieval results"""
+        start_time = time.time()
+        
+        try:
+            original_query = state['original_query']
+            current_query = state['query']
+            generated_summary = state['generated_summary']
+            evaluation_details = state['evaluation_details']
+            
+            logger.info(f"Rewriting query for iteration {state['iteration_count'] + 1}")
+            
+            new_query = await answer_evaluator.rewrite_query(
+                current_query, generated_summary, evaluation_details
+            )
+            elapsed_time = time.time() - start_time
+            
+            logger.info(f"Query rewritten: '{current_query}' -> '{new_query}'")
+            
+            # Update state
+            state['query'] = new_query
+            state['query_history'].append(new_query)
+            state['iteration_count'] += 1
+            state['current_stage'] = 'query_rewritten'
+            state['stage_times']['query_rewriting'] = elapsed_time
+            
+            # Reset retrieval and generation state for next iteration
+            state['retrieved_chunks'] = []
+            state['reranked_chunks'] = []
+            state['generated_summary'] = ""
+            state['formatted_sources'] = []
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error in rewrite_query: {e}")
+            state['error'] = f"Query rewriting failed: {str(e)}"
+            return state
+    
+    def _should_continue_or_end(self, state: WorkflowState) -> str:
+        """Determine whether to continue with query refinement or end the workflow"""
+        
+        # End if answer is adequate
+        if state['is_answer_adequate']:
+            logger.info("Answer is adequate, ending workflow")
+            return "end"
+        
+        # End if maximum iterations reached
+        if state['iteration_count'] >= state['max_iterations']:
+            logger.info(f"Maximum iterations ({state['max_iterations']}) reached, ending workflow")
+            return "end"
+        
+        # End if there's an error
+        if state.get('error'):
+            logger.info("Error detected, ending workflow")
+            return "end"
+        
+        # Continue with query refinement
+        logger.info(f"Answer inadequate, continuing to iteration {state['iteration_count'] + 1}")
+        return "continue"
         
     async def run_workflow(self, query: str, generate_callback=None) -> Dict[str, Any]:
         try:
@@ -169,10 +286,16 @@ class RAGWorkflow:
             # Initialize state
             initial_state = WorkflowState(
                 query=query,
+                original_query=query,  # Keep track of the original query
                 retrieved_chunks=[],
                 reranked_chunks=[],
                 generated_summary="",
                 formatted_sources=[],
+                iteration_count=0,
+                max_iterations=self.config.max_iterations,
+                is_answer_adequate=False,
+                evaluation_details={},
+                query_history=[query],
                 current_stage="starting",
                 stage_times={},
                 error=None
@@ -191,6 +314,12 @@ class RAGWorkflow:
                 "metadata": {
                     "retrieval_count": len(final_state.get("retrieved_chunks", [])),
                     "rerank_count": len(final_state.get("reranked_chunks", [])),
+                    "iterations": final_state.get("iteration_count", 0),
+                    "is_answer_adequate": final_state.get("is_answer_adequate", False),
+                    "evaluation_details": final_state.get("evaluation_details", {}),
+                    "query_history": final_state.get("query_history", []),
+                    "original_query": final_state.get("original_query", ""),
+                    "final_query": final_state.get("query", "")
                 }
             }
             
