@@ -131,7 +131,8 @@ class RAGWorkflow:
             state['stage_times']['retrieval'] = elapsed_time
             return state
         except Exception as e:
-            logger.error(f"Error in retrieve_chunks: {e}")
+            trace = traceback.format_exc()
+            logger.error(f"Error in retrieve_chunks: {e}\n{trace}")
             state['error'] = f"Retrieval failed: {str(e)}"
             return state
     
@@ -162,7 +163,8 @@ class RAGWorkflow:
             return state
             
         except Exception as e:
-            logger.error(f"Error in rerank_chunks: {e}")
+            trace = traceback.format_exc()
+            logger.error(f"Error in rerank_chunks: {e}\n{trace}")
             state['error'] = f"Reranking failed: {str(e)}"
             return state
     
@@ -197,7 +199,8 @@ class RAGWorkflow:
             return state
             
         except Exception as e:
-            logger.error(f"Error in generate_summary: {e}")
+            trace = traceback.format_exc()
+            logger.error(f"Error in generate_summary: {e}\n{trace}")
             state['error'] = f"Generation failed: {str(e)}"
             return state
     
@@ -208,7 +211,6 @@ class RAGWorkflow:
         try:
             conversation_history = state['conversation_history']
             
-            logger.info(f"Generating recommendations based on {len(conversation_history)} messages...")
             
             # Include the current query and response in history for recommendations
             current_history = list(conversation_history)
@@ -222,6 +224,7 @@ class RAGWorkflow:
                     "content": state['generated_summary']
                 })
             
+            logger.info(f"Generating recommendations based on {len(current_history)} messages...")
             generated_recommendations = await recommendations.generate_recommendations(current_history)
             elapsed_time = time.time() - start_time
             
@@ -235,7 +238,8 @@ class RAGWorkflow:
             return state
             
         except Exception as e:
-            logger.error(f"Error in generate_recommendations: {e}")
+            trace = traceback.format_exc()
+            logger.error(f"Error in generate_recommendations: {e}\n{trace}")
             # Don't fail the whole workflow for recommendations, just return empty list
             state['recommendations'] = []
             return state

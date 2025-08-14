@@ -62,6 +62,6 @@ SERVER_HOST=135.181.63.183
 ```sh
 conda create --name test-client python=3.12 -y
 conda activate test-client
-cd client && pip install -r requirements.txt
-python ./client.py
+pip install -r ./client/requirements.txt
+cd client && python ./client.py
 ```

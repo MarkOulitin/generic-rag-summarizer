@@ -20,7 +20,7 @@ def create_collection_name(topic_domain) -> str:
 client = chromadb.HttpClient(host=os.environ.get('CHROMADB_HOST'), port=int(os.environ.get('CHROMADB_PORT')))
 topic_domain = os.environ['TOPICS_DOMAIN']
 collection_name = create_collection_name(topic_domain)
-collection = client.get_collection(name=collection_name)
+collection = client.get_or_create_collection(name=collection_name)
 
 logger.info("Loading model...")
 check_gpu_memory()
