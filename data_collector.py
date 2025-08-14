@@ -26,7 +26,7 @@ class DocumentCollector:
     def __init__(self):
         self.topic = os.environ['TOPICS_DOMAIN']
         self.max_documents = int(os.getenv('MAX_DOCUMENTS', 2000))
-        self.data_dir = Path('./data/scholar-web')
+        self.data_dir = Path('./data/collected_documents')
         self.data_dir.mkdir(parents=True, exist_ok=True)
         
         # Track collected URLs to avoid duplicates
@@ -268,10 +268,10 @@ class DocumentCollector:
         
         arxiv_results = []
         # Search different sources
-        # logger.info("Searching arXiv...")
-        # arxiv_results = self.search_arxiv(self.topic, max_results=800)
-        # all_results.extend(arxiv_results)
-        # logger.info(f"Found {len(arxiv_results)} arXiv papers")
+        logger.info("Searching arXiv...")
+        arxiv_results = self.search_arxiv(self.topic, max_results=800)
+        all_results.extend(arxiv_results)
+        logger.info(f"Found {len(arxiv_results)} arXiv papers")
         
         logger.info("Searching Google Scholar...")
         scholar_results = self.search_google_scholar(self.topic, num_pages=20)

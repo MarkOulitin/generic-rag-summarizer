@@ -4,7 +4,7 @@ chromadb==1.0.15
 torch==2.7.1
 sentence-transformers==5.1.0
 accelerate==1.9.0
-openai==1.97.0
+openai==1.99.9
 requests==2.32.4
 beautifulsoup4==4.13.4
 PyPDF2==3.0.1
@@ -18,3 +18,4 @@ langchain==0.3.27
 langchain-openai==0.3.30
 langchain-community==0.3.27
 pydantic==2.11.7
+duckduckgo-search==8.1.1

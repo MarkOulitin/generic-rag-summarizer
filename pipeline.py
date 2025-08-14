@@ -109,34 +109,9 @@ class RAGPipeline:
             logger.error(f"Embedding generation failed: {e}")
             return False
         
-    def run_langgraph_ingestion(self) -> bool:
-        """Step 4: Ingest data for LangGraph workflow"""
-        logger.info("=" * 50)
-        logger.info("STEP 4: LANGGRAPH CHROMADB INGESTION")
-        logger.info("=" * 50)
-        
-        try:
-            # Import here to avoid dependency issues if not needed
-            import sys
-            sys.path.append('./server/src')
-            from langgraph_ingest import LangGraphIngest
-            
-            ingest = LangGraphIngest()
-            success = ingest.run_ingestion()
-            
-            if success:
-                logger.info("LangGraph ChromaDB ingestion completed successfully")
-                return True
-            else:
-                logger.error("LangGraph ChromaDB ingestion failed")
-                return False
-                
-        except Exception as e:
-            logger.error(f"LangGraph ChromaDB ingestion failed: {e}")
-            return False
      
     def run_complete_pipeline(self, skip_collection=False, skip_processing=False, 
-                             skip_embeddings=False, skip_langgraph_ingest=False) -> bool:
+                             skip_embeddings=False) -> bool:
         """Run the complete RAG pipeline"""
         logger.info("🚀 Starting Complete RAG Pipeline")
         logger.info(f"Domain: {self.topic_domain}")
@@ -168,14 +143,6 @@ class RAGPipeline:
             else:
                 logger.info("Skipping embedding generation")
             
-            # Step 4: LangGraph ChromaDB Ingestion
-            if not skip_langgraph_ingest:
-                if not self.run_langgraph_ingestion():
-                    logger.error("Pipeline failed at LangGraph ingestion step")
-                    return False
-            else:
-                logger.info("Skipping LangGraph ingestion")
-            
             elapsed_time = time.time() - start_time
             logger.info("=" * 50)
             logger.info("🎉 PIPELINE COMPLETED SUCCESSFULLY!")
@@ -193,26 +160,19 @@ def main():
     Pipeline for Document Collection
 
     This script runs the complete pipeline:
-         1. Collect documents from the web based on topic domain
-     2. Process and chunk the documents
-     3. Generate embeddings for the chunks
-     4. Ingest data into ChromaDB for LangGraph workflow
+        1. Collect documents from the web based on topic domain
+        2. Process and chunk the documents
+        3. Generate embeddings for the chunks
      
      Usage:
-         python pipeline.py [--skip-collection] [--skip-processing] [--skip-embeddings] [--skip-langgraph-ingest]
+         python pipeline.py [--skip-collection] [--skip-processing] [--skip-embeddings]
     """
 
     parser = argparse.ArgumentParser(description='Run the complete RAG document pipeline')
-    parser.add_argument('--skip-collection', action='store_true', 
-                       help='Skip document collection step')
-    parser.add_argument('--skip-processing', action='store_true', 
-                       help='Skip document processing step')
-    parser.add_argument('--skip-embeddings', action='store_true', 
-                       help='Skip embedding generation step')
-    parser.add_argument('--skip-langgraph-ingest', action='store_true', 
-                       help='Skip LangGraph ChromaDB ingestion step')
-    parser.add_argument('--step', choices=['collection', 'processing', 'embeddings', 'langgraph-ingest'],
-                       help='Run only a specific step')
+    parser.add_argument('--skip-collection', action='store_true', help='Skip document collection step')
+    parser.add_argument('--skip-processing', action='store_true', help='Skip document processing step')
+    parser.add_argument('--skip-embeddings', action='store_true', help='Skip embedding generation step')
+    parser.add_argument('--step', choices=['collection', 'processing', 'embeddings'], help='Run only a specific step')
     
     args = parser.parse_args()
     
@@ -227,8 +187,6 @@ def main():
             success = pipeline.run_document_processing()
         elif args.step == 'embeddings':
             success = pipeline.run_embedding_generation()
-        elif args.step == 'langgraph-ingest':
-            success = pipeline.run_langgraph_ingestion()
 
     else:
         # Run complete pipeline
@@ -236,7 +194,6 @@ def main():
             skip_collection=args.skip_collection,
             skip_processing=args.skip_processing,
             skip_embeddings=args.skip_embeddings,
-            skip_langgraph_ingest=args.skip_langgraph_ingest,
         )
     
     if success:
